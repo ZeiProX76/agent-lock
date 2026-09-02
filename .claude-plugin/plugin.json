@@ -1,0 +1,9 @@
+{
+  "name": "agent-lock",
+  "description": "Pins the config files your coding agents obey (Claude Code, Codex, Gemini, VS Code, Cursor) and asks again the moment any of them change. Blocks a mid-session settings edit that adds something that runs.",
+  "version": "0.1.0",
+  "author": { "name": "Hugues Bouissonnie", "url": "https://www.instagram.com/speedy_devv/" },
+  "repository": "https://github.com/ZeiProX76/agent-lock",
+  "license": "MIT",
+  "keywords": ["security", "hooks", "supply-chain", "trust", "config", "claude-code", "codex", "gemini"]
+}

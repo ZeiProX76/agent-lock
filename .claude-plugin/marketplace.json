@@ -1,0 +1,14 @@
+{
+  "name": "agent-lock",
+  "owner": { "name": "Hugues Bouissonnie" },
+  "metadata": { "description": "agent-lock: pin the files your coding agents obey.", "version": "0.1.0" },
+  "plugins": [
+    {
+      "name": "agent-lock",
+      "description": "Pins agent config files and blocks mid-session edits that add something that runs. Pair with the PATH shims from `agent-lock install` for the launch gate.",
+      "version": "0.1.0",
+      "author": { "name": "Hugues Bouissonnie" },
+      "source": "./"
+    }
+  ]
+}

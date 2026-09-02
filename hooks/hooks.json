@@ -1,0 +1,20 @@
+{
+  "description": "agent-lock backstops. ConfigChange: block a settings edit that adds or alters something that runs. SessionStart: warn when a session skipped the launch gate (IDE, direct path) and the pinned config moved.",
+  "hooks": {
+    "ConfigChange": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/agent-lock.mjs\" hook config-change", "timeout": 10 }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/agent-lock.mjs\" hook session-start", "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}
