@@ -82,9 +82,10 @@ function scan() {
   const clean = rows.filter((r) => !r.sealed && !r.inv.flags.length);
   const flagged = rows.filter((r) => !r.sealed && r.inv.flags.length);
   if (clean.length) {
-    const a = ask(`\nPin the ${clean.length} folders with no flags exactly as they are now? [y]es [q]uit`, 'yq');
+    const a = ask(`\nPin the ${clean.length} folders with no flags exactly as they are now? [y]es [n]o, go to the flagged ones [q]uit`, 'ynq');
+    if (a === 'q' || a === null) { out(dim('   nothing pinned')); return 0; }
     if (a === 'y') for (const r of clean) { seal(r.inv); appendLog('seal', r.inv.root, `scan ${r.inv.files.length} files`); }
-    out(a === 'y' ? green(`   pinned ${clean.length} folders`) : dim('   nothing pinned'));
+    out(a === 'y' ? green(`   pinned ${clean.length} folders`) : dim('   clean folders left unpinned'));
   }
   for (const r of flagged) if (sealInteractive(r.inv, null) !== 0) out(dim(`   skipped ${shortHome(r.inv.root)}`));
   out(dim('   pinned, not vouched for. A flag is a sentence to read, not a verdict.'));

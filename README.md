@@ -65,7 +65,7 @@ Typing `claude`, `codex` or `gemini` runs the check first, then execs the real b
 
 Minor changes (a doc, a skill, a scoped `Bash(npm test:*)` permission, a key reorder) print one dim line and get re-pinned. A nag on every launch trains a blind `y`; the gate only stops for things that execute, connect, or grant.
 
-**Safe mode** launches without the project config: Claude Code with `--setting-sources user`, Codex with the folder marked untrusted for that launch (`-c projects."<cwd>".trust_level="untrusted"`). Gemini has no per-launch flag, answer "do not trust" in its own prompt.
+**Safe mode** launches without the project config: Claude Code with `--setting-sources user` (verified). Codex is best effort: `-c projects."<cwd>".trust_level="untrusted" -s read-only -a untrusted`; Codex has no documented per-launch "ignore `.codex/`" flag, and `codex exec` in 0.152.0 writes `trust_level = "trusted"` for the folder into `~/.codex/config.toml` on its own, which agent-lock then reports as a home change ("trusted by Codex, never by you"). Gemini has no per-launch flag, answer "do not trust" in its own prompt.
 
 ## What blocks, what is dim
 

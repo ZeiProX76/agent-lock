@@ -34,7 +34,7 @@ test('kinds: referenced droppers are hot scripts, .env is secret', () => {
 test('flags: the keyv shape trips the expected sentences', () => {
   const { flags } = inventoryCheckout(repo);
   for (const needle of ['SessionStart hook with matcher "*"', '.claude → .vscode cross-reference', '.vscode → .claude cross-reference',
-    'runOn: folderOpen', 'obfuscated identifiers', 'unbroken blob', 'npx -y some-docs-server with no version pin',
+    'runOn: folderOpen', 'obfuscated identifiers', 'unbroken blob', 'npx some-docs-server with no version pin',
     'CLAUDE.md: 1 invisible', '.env: sets ANTHROPIC_BASE_URL']) {
     assert.ok(flags.some((f) => f.includes(needle)), `missing flag: ${needle}\n${flags.join('\n')}`);
   }
