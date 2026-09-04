@@ -270,8 +270,10 @@ test('windows: the menu inside a ConPTY, arrows, a letter, Ctrl-C and the fallba
   const settings = path.join(dir, '.claude', 'settings.local.json');
   // AGENT_LOCK_ASCII=0 keeps the drawn marks, so this reads the same as the POSIX test above.
   const run = (keys, args, env = {}) => {
-    const r = spawnSync(PY, [DRIVER, JSON.stringify(keys), '--', process.execPath, CLI, ...args], {
-      cwd: dir,
+    // Started from tmp, not from the fixture: Windows will not remove a directory that is any
+    // live process's working directory, and the console host outlives the child by a moment.
+    const r = spawnSync(PY, [DRIVER, JSON.stringify(keys), '--', process.execPath, CLI, ...args, dir], {
+      cwd: tmp,
       encoding: 'utf8',
       env: { ...process.env, AGENT_LOCK_ASCII: '0', PTY_COLS: '120', ...env },
       timeout: 60000,
@@ -303,4 +305,12 @@ test('windows: the menu inside a ConPTY, arrows, a letter, Ctrl-C and the fallba
   assert.ok(plain.includes('recorded '), plain);
 });
 
-after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+after(() => {
+  // Windows releases a handle a beat after the process holding it is gone, so a temp tree can
+  // still be busy here. Retry, and if it is still busy say so rather than fail a passing suite.
+  try {
+    fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  } catch (e) {
+    process.stderr.write(`could not remove ${tmp}: ${e.code}\n`);
+  }
+});
