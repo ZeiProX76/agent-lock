@@ -6,6 +6,19 @@ All notable changes to agent-lock. The format follows [Keep a Changelog](https:/
 
 ### Fixed
 
+- **A caret reached the program instead of `cmd.exe`.** `cmd` strips a caret outside a quoted
+  region and leaves it alone inside one, so caret-escaping a metacharacter while the argument was
+  quoted delivered the caret to the program: `--settings "C:\Program Files (x86)\x\no-hooks.json"`
+  arrived as `C:\Program Files ^(x86^)\x\no-hooks.json`. That flag is how the checker switches the
+  model's hooks off, so on a machine with a bracket in the path it would silently not be found.
+  The quotes are escaped now as well, which keeps `cmd` out of a quoted region for the whole
+  argument, so every caret is removed and the batch file's `%*` holds exactly the C-runtime
+  quoting the program expects. The program name keeps real quotes, because `cmd` splits the
+  command it runs on spaces. Only a real Windows run could have found this.
+- **A tool that spawns `claude` itself was refused on Windows.** There is no `exec` and no PID to
+  tell a child from a wrapper handing the launch on, so a hook calling `claude` got "nothing real
+  left to run". When nothing else is left on PATH, the binary the parent ran is the right answer
+  for both; a wrapper that really loops still stops at `MAX_HOPS`.
 - **A capitalised config name no longer hides a hook.** Windows and macOS open
   `.claude/Settings.json` when a tool asks for `.claude/settings.json`, and Claude Code reads it,
   but the kind table matched the path exactly, so the file came back as `other`: a `SessionStart`
@@ -39,8 +52,10 @@ All notable changes to agent-lock. The format follows [Keep a Changelog](https:/
   written by hand.
 - A quoting oracle on Windows: every argument agent-lock builds itself (flags, a model name, a
   path with spaces, `C:\Program Files (x86)`, an empty argument, non-ASCII, 1200 characters) has to
-  come back out of `cmd.exe` byte for byte. For what a user types, the assertion is that an
-  argument never splits in two or disappears.
+  come back out of a real `cmd.exe` byte for byte, and so does what a user is likely to type
+  (`^&|<>()`, a trailing backslash, `a;b,c`, `!bang!`, `*`, `?`, `say "hi" twice`, `fifty% done`).
+  This is the test that found the caret leak below; before it, the quoting was compared against
+  strings written by hand.
 - A Windows-only shim test covering what the POSIX shim test covers on POSIX: the `.cmd` shim
   gates once, the tool's own re-launch takes the next binary, a `--dangerously-*` flag is refused.
 - An install round trip on a throwaway Windows runner: install, then start the tool through
@@ -51,7 +66,8 @@ All notable changes to agent-lock. The format follows [Keep a Changelog](https:/
   be written, a path past the Windows 260-character limit.
 - CI widened to Node 18, 20, 22 and 24 on Linux, macOS and Windows, plus the previous Ubuntu and
   Windows Server images and an Alpine job for musl. Node 24 was untested and is what a Homebrew
-  install runs.
+  install runs. Seventeen jobs, all green: 30 tests, 27 on every platform, three skipping with the
+  platform they are for. The Windows install job passes every step, all four shells included.
 
 ## [0.3.0] - 2026-09-04
 
