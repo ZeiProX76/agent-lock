@@ -39,7 +39,8 @@ const HELP = `agent-lock, pin the files your coding agents obey
   agent-lock uninstall
 
   env: AGENT_LOCK_SKIP=1 bypasses one launch (logged); AGENT_LOCK_ALLOW_NONINTERACTIVE=1 allows
-  --dangerously-* flags with no terminal attached. State: ${LOCK_HOME}
+  --dangerously-* flags with no terminal attached; AGENT_LOCK_ASCII=1 draws with plain ASCII;
+  AGENT_LOCK_NO_RAW=1 asks one letter instead of an arrow menu. State: ${LOCK_HOME}
 `;
 
 const argv = process.argv.slice(2);
