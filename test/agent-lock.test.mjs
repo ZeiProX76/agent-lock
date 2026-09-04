@@ -71,7 +71,8 @@ test('flags: the keyv shape trips the expected sentences', () => {
 
 test('seal then verify: exit 0, snapshot holds no .env value', () => {
   seal(inventoryCheckout(repo));
-  assert.equal(cli(['verify']).status, 0);
+  const v = cli(['verify']);
+  assert.equal(v.status, 0, `verify disagreed with the seal it just wrote:\n${v.stderr}`);
   const files = fs.readdirSync(snapshotDir(repo), { recursive: true }).map(String);
   const all = files
     .filter((f) => fs.statSync(path.join(snapshotDir(repo), f)).isFile())
@@ -88,7 +89,8 @@ test('doc edit is minor: verify exit 0, compare not hot', () => {
   const cmp = compare(sealedEntry(inv), inv);
   assert.equal(cmp.hot, false);
   assert.equal(cmp.changed.length, 1);
-  assert.equal(cli(['verify']).status, 0);
+  const v2 = cli(['verify']);
+  assert.equal(v2.status, 0, `in-process says minor, the CLI says hot:\n${v2.stderr}`);
   seal(inv);
 });
 
@@ -356,7 +358,7 @@ test('gate without a terminal: skip works, unsealed refuses, dangerous flag refu
 
 test('report prints hashes and flags to stdout', () => {
   const r = cli(['report']);
-  assert.equal(r.status, 0);
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
   assert.ok(/^[0-9a-f]{64}\s+\d+\s+claude-settings\s+\.claude\/settings\.json$/m.test(r.stdout));
   assert.ok(r.stdout.includes('agent-lock knows what changed, not what is safe.'));
 });
