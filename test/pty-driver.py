@@ -19,7 +19,8 @@ if hasattr(sys.stdout, 'reconfigure'):
 keys = json.loads(sys.argv[1])
 cmd = sys.argv[sys.argv.index('--') + 1:]
 cols = int(os.environ.get('PTY_COLS', '0') or 0)
-DEADLINE = 40
+# Below the 60s the test harness allows, so the driver always gets to print what it captured.
+DEADLINE = 25
 
 
 def schedule(start):
@@ -59,7 +60,7 @@ def posix():
         if time.time() - start > DEADLINE:
             break
     _, status = os.waitpid(pid, 0)
-    return out.decode('utf8', 'replace'), os.waitstatus_to_exitcode(status)
+    return out.decode('utf8', 'replace'), os.waitstatus_to_exitcode(status), ki
 
 
 def windows():
@@ -91,15 +92,19 @@ def windows():
             proc.write(keys[ki][1])
             ki += 1
             next_at = time.time() + keys[ki][0] if ki < len(keys) else None
+    proc.isalive()  # refreshes exitstatus
     code = proc.exitstatus
     if code is None:
+        # Never wait() on a process that may still be running: pywinpty's wait has no timeout and
+        # its isalive() cannot be trusted to say which case this is.
         try:
-            code = proc.wait()
+            proc.terminate(force=True)
         except Exception:
-            code = 0
-    return out, code if code is not None else 0
+            pass
+        code = -1
+    return out, code, ki
 
 
-text, code = windows() if sys.platform == 'win32' else posix()
+text, code, typed = windows() if sys.platform == 'win32' else posix()
 sys.stdout.write(text)
-sys.stdout.write('\n[exit %d]\n' % code)
+sys.stdout.write('\n[exit %d] [keys %d/%d]\n' % (code, typed, len(keys)))
