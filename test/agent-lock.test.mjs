@@ -213,7 +213,9 @@ test('windows: a .cmd is run through cmd.exe with every argument quoted', () => 
   assert.equal(quoteForCmd('a&b'), '^"a^&b^"');
   // a quote plus a metacharacter is the shape that breaks the second parse, and is refused
   assert.deepEqual(unsafeForCmd(['--model', 'opus', 'C:\\a b\\x (1).json']), []);
-  assert.deepEqual(unsafeForCmd(['fine', 'a"b&calc']), ['a"b&calc']);
+  assert.deepEqual(unsafeForCmd(['-p', 'say "hi" twice']), [], 'a quoted prompt is not an injection');
+  assert.deepEqual(unsafeForCmd(['-p', 'say "hi"&calc']), ['say "hi"&calc']);
+  assert.deepEqual(unsafeForCmd(['-p', 'say "hi"', '&calc']), ['say "hi"', '&calc']);
   // POSIX is never routed through a shell
   assert.deepEqual(runnable('/usr/bin/claude', ['-p'], false), {
     file: '/usr/bin/claude',
@@ -289,14 +291,22 @@ process.exit(7);
   assert.ok(rec.includes(`chain: ${fake}`), rec);
   assert.ok(rec.includes('session: skipped'), rec);
 
-  // Second hop: the chain is already set, so the gate is skipped and the next binary is taken.
+  // Second hop: the chain is already set, so the gate is skipped. What happens when the chain is
+  // the only claude on PATH differs by design. POSIX knows from the PID whether this is a wrapper
+  // handing the launch on (refuse, nothing real is left) or the tool spawning itself (reuse the
+  // parent's binary). Windows has neither exec nor that PID, so it reuses the binary for both,
+  // which keeps a hook that calls claude working; a real loop still stops at MAX_HOPS.
   const again = spawnSync(process.execPath, [CLI, 'launch', 'claude', '--'], {
     cwd: repo,
     encoding: 'utf8',
     env: { ...process.env, PATH: binDir, AGENT_LOCK_CHAIN: fake },
   });
-  assert.equal(again.status, EXIT_NO_BINARY, again.stderr);
-  assert.ok(again.stderr.includes('nothing real left to run'), again.stderr);
+  if (process.platform === 'win32') {
+    assert.equal(again.status, 7, `the parent's binary is run again: ${again.stderr}`);
+  } else {
+    assert.equal(again.status, EXIT_NO_BINARY, again.stderr);
+    assert.ok(again.stderr.includes('nothing real left to run'), again.stderr);
+  }
 });
 
 test('a wall of skill and eval files collapses to one line; a hook change does not', () => {
@@ -575,9 +585,10 @@ fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify(process.argv.slice(2)
   assert.deepEqual(sent(built), built);
   // What a user may type. cmd.exe re-reads these and we do not promise they arrive byte for byte,
   // but an argument must never split into two or disappear: that is how an extra flag gets in.
-  const typed = ['a"b', '^&|<>()', 'trailing\\', 'a;b,c', '!bang!', '*', '?', 'fifty% done'];
-  const back = sent(typed);
-  assert.equal(back.length, typed.length, `an argument split or vanished: ${JSON.stringify(back)}`);
+  // What a user may type, minus the quote-and-metacharacter combination, which is refused at the
+  // launch rather than passed through (see the .cmd shim test). These have to arrive intact too.
+  const typed = ['^&|<>()', 'trailing\\', 'a;b,c', '!bang!', '*', '?', 'say "hi" twice', 'fifty% done'];
+  assert.deepEqual(sent(typed), typed);
 });
 
 // ---------------------------------------------------------------------------------------------
