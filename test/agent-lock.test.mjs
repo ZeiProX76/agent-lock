@@ -635,32 +635,25 @@ test('a PATH of directories that do not exist says the tool is missing, and does
   assert.ok(!/\n\s+at /.test(r.stderr), `a stack trace reached the user:\n${r.stderr}`);
 });
 
-test('a state directory that cannot be written does not block a launch, and says so', {
-  skip:
-    process.platform === 'win32' || process.getuid?.() === 0
-      ? 'needs POSIX permissions as a normal user'
-      : false,
-}, () => {
-  const home = fs.mkdtempSync(path.join(tmp, 'ro-home-'));
+test('a state directory that cannot be written does not block a launch, and says so', () => {
+  // A regular file where the state directory should be, rather than a chmod: the write fails the
+  // same way on every platform, and it still fails when the tests run as root in a container.
+  const home = path.join(tmp, 'state-is-a-file');
+  fs.writeFileSync(home, 'not a directory\n');
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(tmp, 'ro-repo-')));
   const binDir = path.join(tmp, 'ro-bin');
   const fake = fakeTool(binDir, 'claude', "console.log('fake');\n");
-  fs.chmodSync(home, 0o500);
-  try {
-    // A read-only state directory is not a reason to refuse work, but the bypass message says
-    // the launch is recorded, so the launch has to admit when it was not.
-    const r = spawnSync(process.execPath, [CLI, 'gate', 'claude', '--'], {
-      cwd: dir,
-      encoding: 'utf8',
-      env: { ...process.env, AGENT_LOCK_HOME: home, PATH: withPath(binDir), AGENT_LOCK_SKIP: '1' },
-    });
-    assert.equal(r.status, 0, `a broken log must not stop a launch: ${r.stderr}`);
-    assert.equal(r.stdout.split('\n')[0], fake);
-    assert.ok(r.stderr.includes('this launch is not recorded'), `silently unlogged:\n${r.stderr}`);
-    assert.ok(!/\n\s+at /.test(r.stderr), `a stack trace reached the user:\n${r.stderr}`);
-  } finally {
-    fs.chmodSync(home, 0o700);
-  }
+  // A state directory that cannot be written is not a reason to refuse work, but the bypass
+  // message says the launch is recorded, so the launch has to admit when it was not.
+  const r = spawnSync(process.execPath, [CLI, 'gate', 'claude', '--'], {
+    cwd: dir,
+    encoding: 'utf8',
+    env: { ...process.env, AGENT_LOCK_HOME: home, PATH: withPath(binDir), AGENT_LOCK_SKIP: '1' },
+  });
+  assert.equal(r.status, 0, `a broken log must not stop a launch: ${r.stderr}`);
+  assert.equal(r.stdout.split('\n')[0], fake);
+  assert.ok(r.stderr.includes('this launch is not recorded'), `silently unlogged:\n${r.stderr}`);
+  assert.ok(!/\n\s+at /.test(r.stderr), `a stack trace reached the user:\n${r.stderr}`);
 });
 
 test('a path past the Windows 260-character limit is inventoried, or refused cleanly', () => {
@@ -678,6 +671,34 @@ test('a path past the Windows 260-character limit is inventoried, or refused cle
   assert.equal(inv.files.length, 1, `the deep file was not inventoried: ${inv.files.map((f) => f.rel)}`);
   assert.ok(inv.files[0].rel.startsWith('.claude/skills/'), inv.files[0].rel);
   assert.ok(!inv.files[0].rel.includes('\\'), 'the rel stays "/"-shaped however deep it is');
+});
+
+// Git Bash and WSL share the Windows home directory and look for an extension-less `claude`,
+// which is why install writes the POSIX shim on Windows too. That shim had never been run there.
+test('windows: the POSIX shim runs under Git Bash, which shares this home directory', {
+  skip: process.platform === 'win32' ? false : 'Git Bash is a Windows shell',
+}, () => {
+  const bash = ['C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\Program Files\\Git\\usr\\bin\\bash.exe'].find(
+    (p) => fs.existsSync(p)
+  );
+  if (!bash) {
+    process.stderr.write('  (no Git Bash on this machine)\n');
+    return;
+  }
+  seal(inventoryHome());
+  const shimDir = path.join(process.env.AGENT_LOCK_HOME, 'bin');
+  const realDir = path.join(tmp, 'gitbash', 'real');
+  fs.mkdirSync(shimDir, { recursive: true });
+  fs.writeFileSync(path.join(shimDir, 'claude'), shim('claude'));
+  fakeTool(realDir, 'claude', "process.stdout.write('REAL ' + process.argv.slice(2).join(' ') + '\\n');\n");
+  const r = spawnSync(bash, ['-c', 'claude --foo "bar baz"'], {
+    cwd: repo,
+    encoding: 'utf8',
+    env: { ...process.env, PATH: withPath(shimDir, realDir, process.env.PATH) },
+    timeout: 30000,
+  });
+  assert.ok(r.stdout.includes('REAL --foo bar baz'), `${r.stdout}\n${r.stderr}`);
+  assert.equal((r.stderr.match(/agent-lock ok/g) || []).length, 1, `gate must run once:\n${r.stderr}`);
 });
 
 after(() => fs.rmSync(tmp, { recursive: true, force: true }));

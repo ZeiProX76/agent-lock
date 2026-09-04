@@ -45,6 +45,21 @@ All notable changes to agent-lock. The format follows [Keep a Changelog](https:/
 
 ### Testing
 
+- **Every test now runs on the platform whose mechanism it describes.** 32 tests: Windows runs
+  30, Linux and macOS run 28, and every skip is the other platform's mechanism rather than a
+  missing tool. Three skips were closed to get there:
+  - The menu is driven inside a real terminal on Windows as well, through ConPTY via `pywinpty`
+    (2.0.15, prebuilt wheels, no toolchain). The driver moved out of a string literal into
+    `test/pty-driver.py` with a branch per platform. Reads block there on purpose: with
+    non-blocking reads pywinpty calls a quiet console EOF, which for a program waiting on a menu
+    is one blink after it has drawn, so the keys are typed from a second thread and a watchdog
+    ends the read.
+  - The unwritable-state-directory test used `chmod`, so it skipped on Windows and again whenever
+    the container runs as root. A regular file where the directory should be fails the write on
+    every platform and under every user.
+  - The POSIX shim, which install writes on Windows too because Git Bash and WSL share the home
+    directory and look for an extension-less `claude`, had never been run there. It is now.
+
 - The stand-in tool the suite launches is a Node script behind a `.cmd` on Windows and a `sh`
   launcher on POSIX, so **the tests that used to skip on Windows now run there**: the gate, the
   launch chain, the exit code and the checker's isolation. As a side effect the `.cmd` command
