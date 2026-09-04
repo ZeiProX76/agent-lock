@@ -676,7 +676,7 @@ test('a path past the Windows 260-character limit is inventoried, or refused cle
 // Git Bash and WSL share the Windows home directory and look for an extension-less `claude`,
 // which is why install writes the POSIX shim on Windows too. That shim had never been run there.
 test('windows: the POSIX shim runs under Git Bash, which shares this home directory', {
-  skip: windowsOnly,
+  skip: process.platform === 'win32' ? false : 'Git Bash is a Windows shell',
 }, () => {
   const bash = ['C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\Program Files\\Git\\usr\\bin\\bash.exe'].find(
     (p) => fs.existsSync(p)
