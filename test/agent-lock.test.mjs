@@ -701,4 +701,12 @@ test('windows: the POSIX shim runs under Git Bash, which shares this home direct
   assert.equal((r.stderr.match(/agent-lock ok/g) || []).length, 1, `gate must run once:\n${r.stderr}`);
 });
 
-after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+after(() => {
+  // Windows releases a handle a beat after the process holding it is gone, so a temp tree can
+  // still be busy here. Retry, and if it is still busy say so rather than fail a passing suite.
+  try {
+    fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  } catch (e) {
+    process.stderr.write(`could not remove ${tmp}: ${e.code}\n`);
+  }
+});
