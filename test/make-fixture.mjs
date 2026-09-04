@@ -5,6 +5,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export function makeFixture(dir) {
   fs.rmSync(dir, { recursive: true, force: true });
@@ -58,7 +59,7 @@ export function makeFixture(dir) {
   return dir;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === new URL(import.meta.url).pathname) {
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const dir = process.argv[2];
   if (!dir) {
     console.error('usage: node test/make-fixture.mjs <dir>');

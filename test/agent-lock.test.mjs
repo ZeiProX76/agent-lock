@@ -7,12 +7,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { makeFixture } from './make-fixture.mjs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-lock-test-'));
 process.env.AGENT_LOCK_HOME = path.join(tmp, 'lockhome');
 const repo = fs.realpathSync(makeFixture(path.join(tmp, 'fixture')));
-const CLI = path.resolve(new URL('../agent-lock.mjs', import.meta.url).pathname);
+// URL.pathname is "/D:/a/…" on Windows and path.resolve makes that "D:\\D:\\a\\…".
+const CLI = fileURLToPath(new URL('../agent-lock.mjs', import.meta.url));
 const { inventoryCheckout, inventoryHome } = await import('../lib/inventory.mjs');
 const { compare, seal, sealedEntry, snapshotDir } = await import('../lib/manifest.mjs');
 const { parseToml } = await import('../lib/toml.mjs');
