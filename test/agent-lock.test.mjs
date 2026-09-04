@@ -82,7 +82,10 @@ test('seal then verify: exit 0, snapshot holds no .env value', () => {
     .join('\n');
   assert.ok(!all.includes('fixture-secret-value'), 'env value leaked into snapshot');
   assert.ok(all.includes('DATABASE_URL'), 'env key names should be kept');
-  assert.equal(fs.statSync(path.join(process.env.AGENT_LOCK_HOME, 'manifest.json')).mode & 0o777, 0o600);
+  // Windows has no POSIX mode bits: Node reports 0o666 for anything writable. There the
+  // manifest is protected by the ACL it inherits from the user profile, not by a mode.
+  if (process.platform !== 'win32')
+    assert.equal(fs.statSync(path.join(process.env.AGENT_LOCK_HOME, 'manifest.json')).mode & 0o777, 0o600);
 });
 
 test('doc edit is minor: verify exit 0, compare not hot', () => {

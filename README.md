@@ -175,7 +175,7 @@ agent-lock install [--strict]   shims, rc lines, git hooks, pin home. --strict p
 agent-lock uninstall
 ```
 
-State: `~/.agent-lock/manifest.json` (0600), `snapshots/` (copies of pinned text files, `.env` keys only, never values), `log` (every seal, approval, refusal, skip). `AGENT_LOCK_SKIP=1` bypasses one launch and is logged.
+State: `~/.agent-lock/manifest.json` (mode 0600 on macOS and Linux; on Windows there are no mode bits and the file is protected by the ACL it inherits from your user profile), `snapshots/` (copies of pinned text files, `.env` keys only, never values), `log` (every seal, approval, refusal, skip). `AGENT_LOCK_SKIP=1` bypasses one launch and is logged.
 
 ## Verify what you installed
 
