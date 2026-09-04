@@ -152,47 +152,36 @@ test('check: the model reads from an empty folder, as the launched tool, never a
   assert.equal(skips(), before, "the checker's own launch is not a logged skip");
 });
 
-const PTY_DRIVER = `import fcntl, json, os, pty, select, struct, sys, termios, time
-keys = json.loads(sys.argv[1]); cmd = sys.argv[sys.argv.index('--') + 1:]
-pid, fd = pty.fork()
-if pid == 0: os.execvp(cmd[0], cmd)
-cols = int(os.environ.get('PTY_COLS', '0'))
-if cols: fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 24, cols, 0, 0))
-out = b''; start = time.time(); ki = 0; next_at = start + keys[0][0]
-while True:
-    r, _, _ = select.select([fd], [], [], 0.05)
-    if r:
-        try: chunk = os.read(fd, 65536)
-        except OSError: break
-        if not chunk: break
-        out += chunk
-    if next_at and time.time() >= next_at:
-        os.write(fd, keys[ki][1].encode()); ki += 1
-        next_at = time.time() + keys[ki][0] if ki < len(keys) else None
-    if time.time() - start > 40: break
-_, status = os.waitpid(pid, 0)
-sys.stdout.write(out.decode('utf8', 'replace')); sys.stdout.write('\\n[exit %d]\\n' % os.waitstatus_to_exitcode(status))
-`;
-const hasPty =
-  process.platform !== 'win32' &&
-  spawnSync('python3', ['-c', 'import pty'], { stdio: 'ignore' }).status === 0;
+// The pty driver lives in test/pty-driver.py: it forks a pty on POSIX and opens a ConPTY through
+// pywinpty on Windows, types on a schedule, and prints everything the program drew plus its exit
+// code. `pip install pywinpty` is what turns the Windows half on; without it that test skips.
+const PY = process.platform === 'win32' ? 'python' : 'python3';
+const DRIVER = fileURLToPath(new URL('./pty-driver.py', import.meta.url));
+const hasModule = (m) => spawnSync(PY, ['-c', `import ${m}`], { stdio: 'ignore' }).status === 0;
+const noPty =
+  process.platform === 'win32'
+    ? hasModule('winpty')
+      ? false
+      : 'needs pywinpty for a ConPTY'
+    : hasModule('pty')
+      ? false
+      : 'needs python3 for a pty';
+// colours out: assertions match on what a reader sees, not on escape sequences
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC is the thing being stripped
+const readable = (r) => `${r.stdout}\n[stderr] ${r.stderr}`.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '');
 
 test('menu: arrows and Enter pick, a letter picks directly, Ctrl-C quits and restores the terminal', {
-  skip: hasPty ? false : 'needs python3 for a pty',
+  skip: process.platform === 'win32' ? 'this one drives sh and reads stty back; ConPTY has its own' : noPty,
 }, () => {
-  const driver = path.join(tmp, 'pty-driver.py');
-  fs.writeFileSync(driver, PTY_DRIVER);
   const dir = makeFixture(path.join(tmp, 'menu-fixture'));
   const run = (keys, cmd, cols = 0) => {
-    const r = spawnSync('python3', [driver, JSON.stringify(keys), '--', 'sh', '-c', cmd], {
+    const r = spawnSync(PY, [DRIVER, JSON.stringify(keys), '--', 'sh', '-c', cmd], {
       cwd: dir,
       encoding: 'utf8',
       env: { ...process.env, TERM: 'xterm', PTY_COLS: String(cols) },
       timeout: 45000,
     });
-    // colours out: assertions match on what a reader sees, not on escape sequences
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: ESC is the thing being stripped
-    return `${r.stdout}\n[stderr] ${r.stderr}`.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '');
+    return readable(r);
   };
   const node = `"${process.execPath}" "${CLI}"`;
   // the cursor starts on the checker; one up is the accept line
@@ -272,6 +261,46 @@ test('menu: arrows and Enter pick, a letter picks directly, Ctrl-C quits and res
     /(^|\s)icanon/.test(ctrlC) && /(^|\s)echo\b/.test(ctrlC) && !/-icanon/.test(ctrlC),
     `tty not restored:\n${ctrlC}`
   );
+});
+
+test('windows: the menu inside a ConPTY, arrows, a letter, Ctrl-C and the fallback', {
+  skip: process.platform === 'win32' ? noPty : 'ConPTY only exists on Windows',
+}, () => {
+  const dir = makeFixture(path.join(tmp, 'menu-conpty'));
+  const settings = path.join(dir, '.claude', 'settings.local.json');
+  // AGENT_LOCK_ASCII=0 keeps the drawn marks, so this reads the same as the POSIX test above.
+  const run = (keys, args, env = {}) => {
+    const r = spawnSync(PY, [DRIVER, JSON.stringify(keys), '--', process.execPath, CLI, ...args], {
+      cwd: dir,
+      encoding: 'utf8',
+      env: { ...process.env, AGENT_LOCK_ASCII: '0', PTY_COLS: '120', ...env },
+      timeout: 60000,
+    });
+    return readable(r);
+  };
+  // the cursor starts on the checker; one up is the accept line
+  const up = run(
+    [
+      [1.5, '\x1b[A'],
+      [0.3, '\r'],
+    ],
+    ['seal']
+  );
+  assert.ok(up.includes('❯ yes · records their fingerprints'), `no arrow menu in a ConPTY:\n${up}`);
+  assert.ok(up.includes('recorded 7 files'), up);
+
+  fs.writeFileSync(settings, '{"permissions":{"allow":["Bash(*)"]}}');
+  const letter = run([[1.5, 'a']], ['approve']);
+  assert.ok(letter.includes('recorded 8 files'), `a letter must pick directly:\n${letter}`);
+
+  fs.writeFileSync(settings, '{"permissions":{"allow":["Bash(ls)"]}}');
+  const ctrlC = run([[1.5, '\x03']], ['approve']);
+  assert.ok(ctrlC.includes('[exit 1]'), `Ctrl-C must quit without recording:\n${ctrlC}`);
+  assert.ok(!ctrlC.includes('recorded '), ctrlC);
+
+  const plain = run([[1.5, 'a\r']], ['approve'], { AGENT_LOCK_NO_RAW: '1' });
+  assert.ok(plain.includes('[a] yes ·'), `no fallback menu:\n${plain}`);
+  assert.ok(plain.includes('recorded '), plain);
 });
 
 after(() => fs.rmSync(tmp, { recursive: true, force: true }));

@@ -19,6 +19,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+      - name: pywinpty, so the menu test drives a real ConPTY
+        if: runner.os == 'Windows'
+        run: pip install "pywinpty==2.0.15"
       - run: npm test
 
   # The images one release behind. Windows Server 2022 keeps the older managed-settings layout
@@ -35,6 +38,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: pywinpty, so the menu test drives a real ConPTY
+        if: runner.os == 'Windows'
+        run: pip install "pywinpty==2.0.15"
       - run: npm test
 
   # musl, not glibc: the libc every devcontainer and CI image built on Alpine actually uses.
