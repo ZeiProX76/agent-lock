@@ -12,6 +12,9 @@ import sys
 import time
 
 os.environ.setdefault('PYWINPTY_BLOCK', '0')
+# Python on Windows writes stdout as cp1252 by default and dies on the first drawn mark.
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 keys = json.loads(sys.argv[1])
 cmd = sys.argv[sys.argv.index('--') + 1:]
@@ -67,23 +70,26 @@ def windows():
     start = time.time()
     ki = 0
     next_at = schedule(start)
-    while True:
+    gone_at = None
+    while time.time() - start < DEADLINE:
         try:
             chunk = proc.read(65536)
         except EOFError:
             break
         if chunk:
             out += chunk
+            gone_at = None
         else:
+            if not proc.isalive():
+                # the child is finished; give the console a moment to hand over what is left
+                gone_at = gone_at or time.time()
+                if time.time() - gone_at > 0.5:
+                    break
             time.sleep(0.02)
         if next_at and time.time() >= next_at:
             proc.write(keys[ki][1])
             ki += 1
             next_at = time.time() + keys[ki][0] if ki < len(keys) else None
-        if time.time() - start > DEADLINE:
-            break
-    while proc.isalive() and time.time() - start < DEADLINE:
-        time.sleep(0.05)
     return out, proc.exitstatus if proc.exitstatus is not None else 0
 
 
