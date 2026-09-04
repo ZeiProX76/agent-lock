@@ -21,7 +21,7 @@ const { compare, seal, sealedEntry, snapshotDir } = await import('../lib/manifes
 const { parseToml } = await import('../lib/toml.mjs');
 const { isHotKey, semanticDiff } = await import('../lib/semantic.mjs');
 const { isInside, relFrom, slash } = await import('../lib/paths.mjs');
-const { quoteForCmd, runnable } = await import('../lib/spawn.mjs');
+const { quoteForCmd, runnable, unsafeForCmd } = await import('../lib/spawn.mjs');
 const { candidateNames, parseRegSettings, tomlKey } = await import('../lib/tools.mjs');
 const { cmdShim, ps1Shim } = await import('../lib/windows.mjs');
 const { kindOf, miscased } = await import('../lib/inventory.mjs');
@@ -201,12 +201,19 @@ test('windows: a .cmd is run through cmd.exe with every argument quoted', () => 
   assert.equal(r.args[0], '/d');
   assert.equal(r.args[2], '/c');
   assert.ok(r.options.windowsVerbatimArguments);
+  // the program keeps real quotes; cmd splits the command it runs on spaces
   assert.ok(r.args[3].includes('"C:\\Program Files\\nodejs\\gemini.cmd"'), r.args[3]);
-  assert.ok(r.args[3].includes('"C:\\a b\\x.json"'), r.args[3]);
+  // arguments have their quotes escaped too, so cmd never enters a quoted region and every caret
+  // it strips is one of ours. A caret left inside quotes reaches the program: that was the bug.
+  assert.ok(r.args[3].includes('^"C:\\a b\\x.json^"'), r.args[3]);
+  assert.equal(quoteForCmd('C:\\Program Files (x86)\\x'), '^"C:\\Program Files ^(x86^)\\x^"');
   // a trailing backslash must be doubled or it would escape the closing quote
-  assert.equal(quoteForCmd('ends\\'), '"ends\\\\"');
-  assert.equal(quoteForCmd('a"b'), '"a\\"b"');
-  assert.equal(quoteForCmd('a&b'), '"a^&b"');
+  assert.equal(quoteForCmd('ends\\'), '^"ends\\\\^"');
+  assert.equal(quoteForCmd('a"b'), '^"a\\^"b^"');
+  assert.equal(quoteForCmd('a&b'), '^"a^&b^"');
+  // a quote plus a metacharacter is the shape that breaks the second parse, and is refused
+  assert.deepEqual(unsafeForCmd(['--model', 'opus', 'C:\\a b\\x (1).json']), []);
+  assert.deepEqual(unsafeForCmd(['fine', 'a"b&calc']), ['a"b&calc']);
   // POSIX is never routed through a shell
   assert.deepEqual(runnable('/usr/bin/claude', ['-p'], false), {
     file: '/usr/bin/claude',
@@ -387,9 +394,9 @@ test('launch chain: a PATH wrapper that execs the next claude runs the gate once
   // cmux-shaped: skip its own folder, exec the next `claude` on PATH, inject a flag and NODE_OPTIONS
   fs.writeFileSync(
     path.join(wrapDir, 'claude'),
-    `#!/bin/bash
+    `#!/bin/sh
 self="$(cd "$(dirname "$0")" && pwd)"; IFS=:
-for d in $PATH; do [[ "$d" == "$self" ]] && continue; [[ -x "$d/claude" ]] && exec env NODE_OPTIONS=--require=/x/guard.cjs "$d/claude" --session-id abc "$@"; done
+for d in $PATH; do [ "$d" = "$self" ] && continue; [ -x "$d/claude" ] && exec env NODE_OPTIONS=--require=/x/guard.cjs "$d/claude" --session-id abc "$@"; done
 echo "wrapper: no claude" >&2; exit 127
 `,
     { mode: 0o755 }
@@ -474,7 +481,7 @@ test('AGENT_LOCK_ASCII prints nothing a legacy Windows console cannot draw', () 
   fs.writeFileSync(settings, '{"hooks":{"SessionStart":[{"hooks":[{"command":"npm run deploy"}]}]}}');
 
   const beyondAscii = (text) => [...text].filter((c) => c.codePointAt(0) > 127);
-  const unicode = cli(['diff', dir]);
+  const unicode = cli(['diff', dir], { env: { AGENT_LOCK_ASCII: '0' } });
   assert.ok(beyondAscii(unicode.stderr).length > 0, 'the normal output is the Unicode one');
   const ascii = cli(['diff', dir], { env: { AGENT_LOCK_ASCII: '1' } });
   assert.equal(ascii.status, unicode.status, 'the glyph set does not change the answer');
@@ -525,6 +532,11 @@ if (!process.env.CHILD)
   const d = run(['--dangerously-skip-permissions']);
   assert.equal(d.status, 1);
   assert.ok(d.stderr.includes('refusing') && !d.stdout.includes('REAL'), d.stderr);
+  // the argument shape cmd.exe would read as a second command never reaches the tool
+  const inject = run(['-p', 'say "hi"&echo pwned']);
+  assert.ok(!inject.stdout.includes('REAL'), `it ran anyway:\n${inject.stdout}`);
+  assert.ok(!/pwned/.test(inject.stdout), `cmd ran the tail of the argument:\n${inject.stdout}`);
+  assert.ok(inject.stderr.includes('cannot be passed through unchanged'), inject.stderr);
 });
 
 test('windows: an argument agent-lock builds survives cmd.exe exactly as written', {
