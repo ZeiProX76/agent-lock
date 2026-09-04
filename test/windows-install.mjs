@@ -9,7 +9,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { windowsPolicyEntries } from '../lib/tools.mjs';
 import { fakeTool, withPath } from './fake-tool.mjs';
 
 if (process.platform !== 'win32') {
@@ -19,7 +18,12 @@ if (process.platform !== 'win32') {
 
 const CLI = fileURLToPath(new URL('../agent-lock.mjs', import.meta.url));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-lock-install-'));
+// Set before the library is loaded: LOCK_HOME is read once, at import time, so a static import
+// of anything under lib/ here would pin the real ~/.agent-lock instead of this throwaway one.
 process.env.AGENT_LOCK_HOME = path.join(tmp, 'lockhome');
+const { windowsPolicyEntries } = await import('../lib/tools.mjs');
+const { inventoryHome } = await import('../lib/inventory.mjs');
+const { seal } = await import('../lib/manifest.mjs');
 const BIN = path.join(process.env.AGENT_LOCK_HOME, 'bin');
 const userPath = () =>
   execFileSync(
@@ -49,7 +53,13 @@ try {
     assert.ok(after.split(';').includes(BIN), `PATH does not carry ${BIN}: ${after}`);
   });
 
-  // A stand-in `claude` that PATH finds after the shim.
+  // The gate reads the home config on every launch and there is no terminal here to record it
+  // on, so record it the way a person would have before their first launch.
+  seal(inventoryHome());
+
+  // A stand-in `claude` that PATH finds after the shim, started from a folder with no agent
+  // config of its own, so what is under test is the shim and not the fixture.
+  const cwd = fs.mkdtempSync(path.join(tmp, 'checkout-'));
   const realDir = path.join(tmp, 'real');
   fakeTool(realDir, 'claude', "process.stdout.write('REAL ' + process.argv.slice(2).join(' ') + '\\n');\n");
   const env = { ...process.env, PATH: withPath(BIN, realDir, process.env.PATH) };
@@ -61,7 +71,7 @@ try {
   ];
   for (const [label, file, args] of shells)
     step(`the gate runs and the tool starts from ${label}`, () => {
-      const r = spawnSync(file, args, { encoding: 'utf8', env, timeout: 60000 });
+      const r = spawnSync(file, args, { cwd, encoding: 'utf8', env, timeout: 60000 });
       if (r.error?.code === 'ENOENT') {
         process.stdout.write(`  (${file} not on this runner, skipped)\n`);
         return;
