@@ -80,8 +80,9 @@ def windows():
             out += chunk
             gone_at = None
         else:
-            if not proc.isalive():
-                # the child is finished; give the console a moment to hand over what is left
+            # isalive() goes false while a ConPTY sits idle, so it only ends the loop once every
+            # key has been typed. Before that the schedule is the only thing that matters.
+            if ki >= len(keys) and not proc.isalive():
                 gone_at = gone_at or time.time()
                 if time.time() - gone_at > 0.5:
                     break
@@ -90,7 +91,13 @@ def windows():
             proc.write(keys[ki][1])
             ki += 1
             next_at = time.time() + keys[ki][0] if ki < len(keys) else None
-    return out, proc.exitstatus if proc.exitstatus is not None else 0
+    code = proc.exitstatus
+    if code is None:
+        try:
+            code = proc.wait()
+        except Exception:
+            code = 0
+    return out, code if code is not None else 0
 
 
 text, code = windows() if sys.platform == 'win32' else posix()
