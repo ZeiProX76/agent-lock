@@ -4,7 +4,11 @@
     "ConfigChange": [
       {
         "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/agent-lock.mjs\" hook config-change", "timeout": 10 }
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/agent-lock.mjs\" hook config-change",
+            "timeout": 10
+          }
         ]
       }
     ],
@@ -12,7 +16,11 @@
       {
         "matcher": "startup|resume",
         "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/agent-lock.mjs\" hook session-start", "timeout": 10 }
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/agent-lock.mjs\" hook session-start",
+            "timeout": 10
+          }
         ]
       }
     ]

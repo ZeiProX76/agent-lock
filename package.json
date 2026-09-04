@@ -1,13 +1,46 @@
 {
   "name": "agent-lock",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Pin the config files your coding agents obey. Asks again the moment any of them change.",
   "type": "module",
-  "bin": { "agent-lock": "./agent-lock.mjs" },
-  "files": ["agent-lock.mjs", "lib/", "git-hooks/", "hooks/", "skills/", ".claude-plugin/", "README.md", "LICENSE", "SHA256SUMS"],
-  "scripts": { "test": "node test/run.mjs", "checksums": "shasum -a 256 agent-lock.mjs lib/*.mjs git-hooks/hook.sh hooks/hooks.json > SHA256SUMS" },
-  "engines": { "node": ">=18" },
+  "bin": {
+    "agent-lock": "./agent-lock.mjs"
+  },
+  "files": [
+    "agent-lock.mjs",
+    "lib/",
+    "git-hooks/",
+    "hooks/",
+    "skills/",
+    ".claude-plugin/",
+    "README.md",
+    "LICENSE",
+    "SHA256SUMS"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "biome check .",
+    "format": "biome format --write .",
+    "checksums": "shasum -a 256 agent-lock.mjs lib/*.mjs git-hooks/hook.sh hooks/hooks.json > SHA256SUMS"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/ZeiProX76/agent-lock.git" },
-  "keywords": ["claude-code", "codex", "gemini-cli", "security", "supply-chain", "hooks", "trust"]
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ZeiProX76/agent-lock.git"
+  },
+  "keywords": [
+    "claude-code",
+    "codex",
+    "gemini-cli",
+    "security",
+    "supply-chain",
+    "hooks",
+    "trust"
+  ],
+  "devDependencies": {
+    "@biomejs/biome": "2.5.11"
+  }
 }
