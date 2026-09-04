@@ -13,13 +13,54 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        node: [18, 20, 22]
+        node: [18, 20, 22, 24]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
       - run: npm test
+
+  # The images one release behind. Windows Server 2022 keeps the older managed-settings layout
+  # and ships PowerShell 5.1 as the default shell, which is where the shims have to work too.
+  previous-images:
+    name: test (node 22, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm test
+
+  # musl, not glibc: the libc every devcontainer and CI image built on Alpine actually uses.
+  # coreutils gives GNU stty, so the arrow menu is exercised here; the busybox stty that Alpine
+  # ships by default has no -g, and the fallback menu that case drops to has its own test.
+  musl:
+    name: test (node 22, alpine/musl)
+    runs-on: ubuntu-latest
+    container: node:22-alpine
+    steps:
+      - run: apk add --no-cache git python3 coreutils
+      - uses: actions/checkout@v4
+      - run: npm test
+
+  # The parts that only exist on Windows and that no unit test can reach: the shims as installed,
+  # found by every shell the machine ships, and the policy value in HKCU. It writes the user PATH
+  # and a registry key, so it only ever runs on a throwaway runner.
+  windows-install:
+    name: install round trip (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node test/windows-install.mjs
 
   lint:
     name: format, lint, checksums

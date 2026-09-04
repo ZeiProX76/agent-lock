@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { fakeTool, withPath } from './fake-tool.mjs';
 import { makeFixture } from './make-fixture.mjs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-lock-ui-test-'));
@@ -16,8 +17,6 @@ const repo = fs.realpathSync(makeFixture(path.join(tmp, 'fixture')));
 const CLI = fileURLToPath(new URL('../agent-lock.mjs', import.meta.url));
 const { parseVerdict } = await import('../lib/check.mjs');
 const { readKey } = await import('../lib/ui.mjs');
-// The stand-in model is a /bin/sh script, so the tests that use it are POSIX-only.
-const needsSh = process.platform === 'win32' ? 'the stand-in model is a /bin/sh script' : false;
 
 const cli = (args, opts = {}) =>
   spawnSync(process.execPath, [CLI, ...args], {
@@ -48,32 +47,44 @@ test('menu keys and model verdicts decode', () => {
 // that honours the folder it starts in. If its cwd holds agent config it "fires the hook" into
 // FAKE_CANARY, so a checker that ever ran inside a checkout would leave a trace.
 function fakeModel(dir) {
-  fs.mkdirSync(dir, { recursive: true });
-  const body = (name) => `#!/bin/sh
-{ echo "tool: ${name}"; echo "argv: $*"; echo "cwd: $(pwd)"; echo "ls: [$(ls -A)]"; echo "skip: $AGENT_LOCK_SKIP launch=$AGENT_LOCK_LAUNCH"; echo "node_options: [$NODE_OPTIONS]"; cat; } > "$FAKE_RECORD"
-if [ -d "$PWD/.claude" ] || [ -f "$PWD/.mcp.json" ]; then echo fired >> "$FAKE_CANARY"; fi
-prev=''; out=''
-for a in "$@"; do if [ "$prev" = '-o' ]; then out="$a"; fi; prev="$a"; done
-case "$FAKE_VERDICT" in
-  no) answer='NO
-.vscode/setup.mjs is an obfuscated dropper started by the SessionStart hook.' ;;
-  fail) echo boom >&2; exit 3 ;;
-  *) answer='**CLEAR**' ;;
-esac
-if [ -n "$out" ]; then printf '%s\\n' "$answer" > "$out"; fi
-printf '%s\\n' "$answer"
+  const body = (name) => `import fs from 'node:fs';
+const argv = process.argv.slice(2);
+let stdin = '';
+process.stdin.setEncoding('utf8');
+for await (const chunk of process.stdin) stdin += chunk;
+fs.writeFileSync(
+  process.env.FAKE_RECORD,
+  'tool: ${name}\\n' +
+    'argv: ' + argv.join(' ') + '\\n' +
+    'cwd: ' + process.cwd() + '\\n' +
+    'ls: [' + fs.readdirSync(process.cwd()).join(' ') + ']\\n' +
+    'skip: ' + (process.env.AGENT_LOCK_SKIP || '') + ' launch=' + (process.env.AGENT_LOCK_LAUNCH || '') + '\\n' +
+    'node_options: [' + (process.env.NODE_OPTIONS || '') + ']\\n' +
+    stdin
+);
+if (fs.existsSync('.claude') || fs.existsSync('.mcp.json'))
+  fs.appendFileSync(process.env.FAKE_CANARY, 'fired\\n');
+if (process.env.FAKE_VERDICT === 'fail') {
+  process.stderr.write('boom\\n');
+  process.exit(3);
+}
+const answer =
+  process.env.FAKE_VERDICT === 'no'
+    ? 'NO\\n.vscode/setup.mjs is an obfuscated dropper started by the SessionStart hook.'
+    : '**CLEAR**';
+const o = argv.indexOf('-o');
+if (o >= 0 && argv[o + 1]) fs.writeFileSync(argv[o + 1], answer + '\\n');
+process.stdout.write(answer + '\\n');
 `;
-  for (const name of ['claude', 'codex']) fs.writeFileSync(path.join(dir, name), body(name), { mode: 0o755 });
+  for (const name of ['claude', 'codex']) fakeTool(dir, name, body(name));
   return dir;
 }
 
-test('check: the model reads from an empty folder, as the launched tool, never a secret value', {
-  skip: needsSh,
-}, () => {
+test('check: the model reads from an empty folder, as the launched tool, never a secret value', () => {
   const record = path.join(tmp, 'check-record.txt');
   const canary = path.join(tmp, 'canary.txt');
   const env = {
-    PATH: `${fakeModel(path.join(tmp, 'modelbin'))}:${process.env.PATH}`,
+    PATH: withPath(fakeModel(path.join(tmp, 'modelbin')), process.env.PATH),
     FAKE_RECORD: record,
     FAKE_CANARY: canary,
     NODE_OPTIONS: '--max-old-space-size=4096',
@@ -244,6 +255,15 @@ test('menu: arrows and Enter pick, a letter picks directly, Ctrl-C quits and res
   const menuLines = narrow.split('\n').filter((l) => /\[[yaciqls]\]/.test(l));
   assert.ok(menuLines.length > 0, narrow);
   for (const l of menuLines) assert.ok(l.replace(/\s+$/, '').length <= 40, `wraps at 40 cols: ${l}`);
+
+  // A terminal that cannot do raw mode (busybox stty has no -g) drops to the one-letter menu.
+  fs.writeFileSync(
+    path.join(dir, '.claude', 'settings.local.json'),
+    '{"permissions":{"allow":["Bash(ls)"]}}'
+  );
+  const plain = run([[1.5, 'a\r']], `AGENT_LOCK_NO_RAW=1 ${node} approve`);
+  assert.ok(plain.includes('[a] yes ·'), `no fallback menu:\n${plain}`);
+  assert.ok(plain.includes('recorded '), `the fallback menu did not accept a letter:\n${plain}`);
 
   fs.rmSync(path.join(dir, '.claude', 'settings.local.json'));
   const ctrlC = run([[1.5, '\x03']], `${node} approve; echo "code=$?"; stty -a`);
