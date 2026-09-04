@@ -78,8 +78,27 @@ All notable changes to agent-lock. The format follows [Keep a Changelog](https:/
 - The prompts are async and read the console Node can actually read on each platform: `/dev/tty`
   with `stty` on POSIX, `process.stdin` in raw mode on Windows, where a separately opened
   `CONIN$` only delivers a keystroke on Enter (nodejs/node#56338).
-- CI runs the suite on Windows as well as ubuntu and macOS, Node 18 to 22. Tests that stand in
-  for a tool with a `/bin/sh` script say so and skip there rather than pretending to pass.
+- CI runs the suite on Windows as well as ubuntu and macOS, Node 18 to 22, and is green on all
+  ten jobs. Seventeen of the twenty-two tests run on Windows; the four that stand in for a coding
+  agent with a `/bin/sh` script and the one that drives a real pty say so and skip rather than
+  pretending to pass.
+
+### Fixed after the first Windows run
+
+The first time CI ever ran on Windows, four tests failed. Three were the harness, one was a
+claim that cannot hold there:
+
+- `new URL(...).pathname` is `/D:/a/…` on Windows, and `path.resolve` turned that leading slash
+  into a second drive letter, so the child process looked for `D:\D:\a\…\agent-lock.mjs` and
+  three tests were reading node's exit code, not ours. `fileURLToPath` knows about drive letters.
+- `path.relative` in the cross-reference flag: the `.claude` → `.vscode` shape this tool is named
+  for was silently never raised on Windows. The one call site the separator sweep missed.
+- The manifest test asserted mode `0600`. Windows has no POSIX mode bits and Node reports `0o666`
+  for anything writable; there the file is protected by the ACL it inherits from the user profile.
+  The README no longer claims `0600` everywhere.
+- `node --test test/*.test.mjs` ran nothing on Windows under Node 18 and 20: PowerShell does not
+  expand a glob for a native command and only Node 22 expands one itself. The script names both
+  files.
 
 ## [0.2.0] - 2026-09-03
 
