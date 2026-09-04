@@ -2,16 +2,20 @@
 #
 # usage: python pty-driver.py '<[[delay, keys], ...] as json>' -- <argv...>
 # env:   PTY_COLS sets the terminal width (0 = leave it alone)
-# out:   everything the program drew, then "[exit N]"
+# out:   everything the program drew, then "[exit N] [keys typed/total]"
 #
-# POSIX forks a pty. Windows has no fork and no /dev/pts; it has ConPTY, which pywinpty wraps,
-# and PYWINPTY_BLOCK=0 makes the read non-blocking so keys can still be typed on a clock.
+# POSIX forks a pty and polls it. Windows has no fork and no /dev/pts; it has ConPTY, which
+# pywinpty wraps, and there the read blocks while a second thread does the typing.
 import json
 import os
 import sys
 import time
 
-os.environ.setdefault('PYWINPTY_BLOCK', '0')
+# Blocking reads on Windows, deliberately. With PYWINPTY_BLOCK=0 pywinpty reports EOF the moment
+# the console goes quiet, which for a program sitting on a menu is one blink after it has drawn,
+# so a driver that polls walks away before it can type. Blocking read waits for real data; the
+# keys are typed from a second thread and a watchdog ends the read by killing the child.
+os.environ.setdefault('PYWINPTY_BLOCK', '1')
 # Python on Windows writes stdout as cp1252 by default and dies on the first drawn mark.
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -64,45 +68,47 @@ def posix():
 
 
 def windows():
+    import threading
+
     from winpty import PtyProcess
 
     proc = PtyProcess.spawn(cmd, dimensions=(24, cols or 120), env=dict(os.environ))
-    out = ''
-    start = time.time()
-    ki = 0
-    next_at = schedule(start)
-    gone_at = None
-    while time.time() - start < DEADLINE:
-        try:
-            chunk = proc.read(65536)
-        except EOFError:
-            break
-        if chunk:
-            out += chunk
-            gone_at = None
-        else:
-            # isalive() goes false while a ConPTY sits idle, so it only ends the loop once every
-            # key has been typed. Before that the schedule is the only thing that matters.
-            if ki >= len(keys) and not proc.isalive():
-                gone_at = gone_at or time.time()
-                if time.time() - gone_at > 0.5:
-                    break
-            time.sleep(0.02)
-        if next_at and time.time() >= next_at:
-            proc.write(keys[ki][1])
-            ki += 1
-            next_at = time.time() + keys[ki][0] if ki < len(keys) else None
-    proc.isalive()  # refreshes exitstatus
-    code = proc.exitstatus
-    if code is None:
-        # Never wait() on a process that may still be running: pywinpty's wait has no timeout and
-        # its isalive() cannot be trusted to say which case this is.
+    typed = [0]
+
+    def type_keys():
+        for delay, text in keys:
+            time.sleep(delay)
+            try:
+                proc.write(text)
+            except Exception:
+                return
+            typed[0] += 1
+
+    def watchdog():
+        time.sleep(DEADLINE)
+        # Unconditionally: isalive() cannot be trusted to say whether this is needed, and a read
+        # left blocking means the harness kills the driver before it prints anything at all.
         try:
             proc.terminate(force=True)
         except Exception:
             pass
-        code = -1
-    return out, code, ki
+
+    for target in (type_keys, watchdog):
+        threading.Thread(target=target, daemon=True).start()
+
+    out = ''
+    while True:
+        try:
+            chunk = proc.read(65536)
+        except EOFError:
+            break
+        except Exception:
+            break
+        if chunk:
+            out += chunk
+    proc.isalive()  # refreshes exitstatus
+    code = proc.exitstatus
+    return out, code if code is not None else -1, typed[0]
 
 
 text, code, typed = windows() if sys.platform == 'win32' else posix()
