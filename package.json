@@ -18,7 +18,7 @@
     "SHA256SUMS"
   ],
   "scripts": {
-    "test": "node --test test/*.test.mjs",
+    "test": "node --test test/agent-lock.test.mjs test/interactive.test.mjs",
     "check": "biome check .",
     "format": "biome format --write .",
     "checksums": "shasum -a 256 agent-lock.mjs lib/*.mjs git-hooks/hook.sh hooks/hooks.json > SHA256SUMS"
