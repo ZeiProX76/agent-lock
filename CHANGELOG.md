@@ -6,6 +6,31 @@ All notable changes to agent-lock. The format follows [Keep a Changelog](https:/
 
 ### Fixed
 
+- **Installing flattened `%VAR%` entries in the user PATH.** `[Environment]::GetEnvironmentVariable('Path','User')`
+  expands the stored text before returning it, so reading and writing it back turned a
+  `REG_EXPAND_SZ` entry like `%USERPROFILE%\bin` into a hardcoded path, permanently, in entries
+  agent-lock does not own and uninstall could not have restored. Both halves now read the raw
+  value through the registry with `DoNotExpandEnvironmentNames` and write it back as
+  `REG_EXPAND_SZ`, and send the `WM_SETTINGCHANGE` that the .NET call used to send for us. One
+  script does add and remove, so the two can never disagree about the format.
+- **The shell and PowerShell were resolved through the environment.** `COMSPEC` and a bare
+  `powershell` on PATH are both settable by anything running as you, which is the lever this tool
+  exists to take away. Both are now absolute paths under `%SystemRoot%\System32`.
+- **No more `.ps1` shim.** A `.ps1` on PATH is a script, so it answers to the execution policy,
+  and `Restricted` is the default on Windows client machines; CI runs under a policy that could
+  never show it. The `.cmd` shim is found through `PATHEXT` from PowerShell too and propagates the
+  exit code the same way, so it is the only one written now. It also had the checks the `.ps1`
+  never got: a missing `agent-lock.mjs` was reported by one shim and silently ignored by the
+  other, and `exit $LASTEXITCODE` reported success when the launch never started, because
+  `$LASTEXITCODE` is `$null` until a native command has run. `uninstall` still deletes a `.ps1`
+  left by an older install.
+- **A percent in the path to a `.cmd` tool is refused instead of mangled.** `cmd` expands `%VAR%`
+  on its command line even inside quotes, and a caret there reaches the program rather than being
+  removed, so there is no spelling that survives. It joins the quote-plus-metacharacter shape in
+  the same refusal, which now names every argument involved rather than the first one, since it
+  is the combination and not one argument that cannot be passed through.
+- **`uninstall` said the PATH entry was gone when the write had failed.** It now prints why.
+
 - **A caret reached the program instead of `cmd.exe`.** `cmd` strips a caret outside a quoted
   region and leaves it alone inside one, so caret-escaping a metacharacter while the argument was
   quoted delivered the caret to the program: `--settings "C:\Program Files (x86)\x\no-hooks.json"`

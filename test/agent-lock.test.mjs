@@ -22,8 +22,8 @@ const { parseToml } = await import('../lib/toml.mjs');
 const { isHotKey, semanticDiff } = await import('../lib/semantic.mjs');
 const { isInside, relFrom, slash } = await import('../lib/paths.mjs');
 const { quoteForCmd, runnable, unsafeForCmd } = await import('../lib/spawn.mjs');
-const { candidateNames, parseRegSettings, tomlKey } = await import('../lib/tools.mjs');
-const { cmdShim, ps1Shim } = await import('../lib/windows.mjs');
+const { candidateNames, parseRegSettings, system32, tomlKey } = await import('../lib/tools.mjs');
+const { cmdShim } = await import('../lib/windows.mjs');
 const { kindOf, miscased } = await import('../lib/inventory.mjs');
 const EXIT_NO_BINARY = 127;
 // The POSIX shim is a /bin/sh script that execs the real binary. Windows has no exec and ships a
@@ -198,6 +198,9 @@ test('windows: a .cmd is run through cmd.exe with every argument quoted', () => 
     options: {},
   });
   const r = runnable('C:\\Program Files\\nodejs\\gemini.cmd', ['-p', 'C:\\a b\\x.json'], true);
+  // the shell is System32 by absolute path, never COMSPEC and never a bare name on PATH
+  assert.equal(r.file, system32('cmd.exe'));
+  assert.ok(/[/\\]System32[/\\]cmd\.exe$/.test(r.file), r.file);
   assert.equal(r.args[0], '/d');
   assert.equal(r.args[2], '/c');
   assert.ok(r.options.windowsVerbatimArguments);
@@ -212,10 +215,16 @@ test('windows: a .cmd is run through cmd.exe with every argument quoted', () => 
   assert.equal(quoteForCmd('a"b'), '^"a\\^"b^"');
   assert.equal(quoteForCmd('a&b'), '^"a^&b^"');
   // a quote plus a metacharacter is the shape that breaks the second parse, and is refused
-  assert.deepEqual(unsafeForCmd(['--model', 'opus', 'C:\\a b\\x (1).json']), []);
-  assert.deepEqual(unsafeForCmd(['-p', 'say "hi" twice']), [], 'a quoted prompt is not an injection');
-  assert.deepEqual(unsafeForCmd(['-p', 'say "hi"&calc']), ['say "hi"&calc']);
-  assert.deepEqual(unsafeForCmd(['-p', 'say "hi"', '&calc']), ['say "hi"', '&calc']);
+  const G = 'C:\\npm\\gemini.cmd';
+  assert.deepEqual(unsafeForCmd(G, ['--model', 'opus', 'C:\\a b\\x (1).json']), []);
+  assert.deepEqual(unsafeForCmd(G, ['-p', 'say "hi" twice']), [], 'a quoted prompt is not an injection');
+  assert.deepEqual(unsafeForCmd(G, ['-p', 'say "hi"&calc']), ['say "hi"&calc']);
+  assert.deepEqual(unsafeForCmd(G, ['-p', 'say "hi"', '&calc']), ['say "hi"', '&calc']);
+  // cmd expands %VAR% on its command line even inside quotes, and a caret there reaches the
+  // program instead of being removed, so a percent in the program path has no safe spelling
+  assert.deepEqual(unsafeForCmd('C:\\a%TEMP%b\\gemini.cmd', ['-p']), ['C:\\a%TEMP%b\\gemini.cmd']);
+  // brackets and spaces in the program path are covered by the real quotes around it
+  assert.deepEqual(unsafeForCmd('C:\\Program Files (x86)\\gemini.cmd', ['-p']), []);
   // POSIX is never routed through a shell
   assert.deepEqual(runnable('/usr/bin/claude', ['-p'], false), {
     file: '/usr/bin/claude',
@@ -245,7 +254,9 @@ test('windows: PATHEXT names, registry policy, TOML keys and the shims', () => {
   assert.ok(cmd.includes('exit /b %ERRORLEVEL%'));
   // "C:\Program Files (x86)" would close a parenthesised if-block early
   assert.ok(!/if .* \($/m.test(cmd), cmd);
-  assert.ok(ps1Shim('gemini').includes('launch gemini -- @args'));
+  // no .ps1 beside it: a script answers to the execution policy, Restricted is the client
+  // default, and cmd.exe does not care
+  assert.ok(cmd.includes('AGENT_LOCK_SKIP'), 'the shim names its own escape hatch');
 });
 
 test('paths and kinds are "/"-shaped, and the new configs are recognised', () => {
