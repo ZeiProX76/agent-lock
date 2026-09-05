@@ -74,6 +74,8 @@ A dev container is in the table because opening the folder runs commands, and `i
 
 ## Install
 
+macOS and Linux:
+
 ```sh
 git clone https://github.com/ZeiProX76/agent-lock ~/agent-lock
 node ~/agent-lock/agent-lock.mjs install
@@ -81,7 +83,25 @@ node ~/agent-lock/agent-lock.mjs install
 agent-lock scan
 ```
 
-`install` writes three shims (`claude`, `codex`, `gemini`) into `~/.agent-lock/bin/`, adds a PATH line and three aliases to your `.zshrc` / `.bashrc`, installs a global git hook dispatcher (`post-merge` / `post-checkout` warn, every hook name still falls through to the repo's own `.git/hooks`), and pins your home config after showing it to you. `agent-lock uninstall` reverses all of it.
+Windows, in PowerShell or `cmd`:
+
+```powershell
+git clone https://github.com/ZeiProX76/agent-lock "$HOME\agent-lock"
+node "$HOME\agent-lock\agent-lock.mjs" install
+# open a new terminal
+agent-lock scan
+```
+
+`install` writes a shim for each of `claude`, `codex` and `gemini` into `~/.agent-lock/bin/` and puts that directory first on your PATH, installs a global git hook dispatcher (`post-merge` / `post-checkout` warn, every hook name still falls through to the repo's own `.git/hooks`), and pins your home config after showing it to you. `agent-lock uninstall` reverses all of it.
+
+How it reaches PATH differs by platform, and so does what a shim is:
+
+| | shim | PATH |
+|---|---|---|
+| macOS, Linux | one `/bin/sh` script per tool, which `exec`s the real binary | a line plus three aliases appended to `.zshrc` and `.bashrc` |
+| Windows | a `.cmd` per tool, plus the extension-less `sh` one, because Git Bash and WSL share this home directory and look for exactly that name | the `Path` value under `HKCU\Environment`, read and written unexpanded so a `%USERPROFILE%` in it stays a `%USERPROFILE%`. No `.zshrc`, no aliases |
+
+Windows needs nothing installed beyond Node and git. There is no `.ps1` shim on purpose: a script on PATH answers to the execution policy, and `Restricted` is the client default, so PowerShell is sent to the `.cmd` through `PATHEXT` like everything else.
 
 `scan` reads the three trust maps, inventories every folder any of the tools already trusts, and pins the clean ones in one answer. Flagged folders are shown one by one.
 
@@ -198,7 +218,7 @@ cd ~/agent-lock && shasum -a 256 -c SHA256SUMS
 - **Windows runs the gate in the middle, not in front.** Windows has no `exec`, so the `.cmd` shim hands the launch to `agent-lock launch`, which decides and then runs the tool itself, forwarding the console and the exit code. One extra process in the tree, and Ctrl-C reaches the tool the same way. There is no `.ps1` beside it: a script on PATH answers to the execution policy, `Restricted` is the Windows client default, and PowerShell runs the `.cmd` through `PATHEXT` anyway.
 - **On Windows the prompt needs a console on stdin.** There is no `/dev/tty`, and a separately opened `CONIN$` only delivers a keystroke on Enter ([nodejs/node#56338](https://github.com/nodejs/node/issues/56338)), so agent-lock reads `process.stdin`. Piping something into `claude` on Windows means no prompt; the gate refuses instead of guessing, and `AGENT_LOCK_SKIP=1` is the escape hatch.
 - **Every test runs on the platform whose mechanism it describes.** Of 32 tests, Windows runs 30 and Linux and macOS run 28; the ones that skip are the other platform's, and they say so. Windows skips the POSIX `/bin/sh` shim chain and the POSIX menu test that reads `stty` back, and has a `.cmd` shim test and a ConPTY menu test in their place. POSIX skips the four Windows-only ones. Nothing skips for want of a tool.
-- **One argument shape is refused rather than passed through a `.cmd` shim.** `claude` and `codex` ship as `.exe` on Windows and never take that path; an npm-installed CLI like `gemini` does, and its shim hands the arguments back to `cmd.exe` to read a second time. A literal `"` unbalances the quoting there, and a `&`, `|`, `<` or `>` that lands outside quotes as a result is read as another command, so that combination is refused with a sentence. A quoted prompt on its own is fine, a path with brackets is fine, and both are asserted against a real `cmd.exe` in CI along with everything agent-lock builds itself.
+- **One argument shape is refused rather than passed through a `.cmd` shim.** `claude` and `codex` ship as `.exe` on Windows and never take that path; an npm-installed CLI like `gemini` does, and its shim hands the arguments back to `cmd.exe` to read a second time. A literal `"` unbalances the quoting there, and a `&`, `|`, `<` or `>` that lands outside quotes as a result is read as another command, so that combination is refused with a sentence. A quoted prompt on its own is fine, a path with brackets is fine, and both are asserted against a real `cmd.exe` in CI along with everything agent-lock builds itself. A `%` in the path to the `.cmd` itself is refused for the same reason and a different mechanism: `cmd` expands `%VAR%` on its command line even inside quotes, and a caret placed to stop it is delivered to the program rather than removed, so there is no spelling that both survives `cmd` and arrives unchanged.
 - No daemon, no model in the decision path, no confidence numbers, no network of its own, no auto-update.
 
 ## Why not a SessionStart hook
